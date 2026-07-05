@@ -4,165 +4,341 @@ import os
 from dotenv import load_dotenv
 from mcp import MCPMessage
 from agents import IngestionAgent, RetrievalAgent, LLMResponseAgent
+import time
 
 load_dotenv()
 
-st.set_page_config(page_title="Agentic RAG Chatbot (MCP)", layout="wide")
+# ============= FAST PAGE CONFIG =============
+st.set_page_config(
+    page_title="RAG Chatbot",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-@st.cache_resource
-def get_agents():
-    # Cache agents to maintain state of RetrievalAgent's vector DB
+# ============= INLINE CSS (Fast) =============
+st.markdown("""
+<style>
+:root {
+    --primary: #7C3AED;
+    --secondary: #EC4899;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #F9FAFB;
+}
+
+.header {
+    background: linear-gradient(135deg, #7C3AED 0%, #EC4899 100%);
+    color: white;
+    padding: 2rem;
+    border-radius: 0;
+    margin: 0 -1rem 2rem -1rem;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 2.5rem;
+    font-weight: 700;
+}
+
+.header p {
+    margin: 0.5rem 0 0 0;
+    opacity: 0.95;
+}
+
+.chat-user {
+    background: linear-gradient(135deg, #7C3AED 0%, #EC4899 100%);
+    color: white;
+    padding: 1rem;
+    border-radius: 12px 4px 12px 12px;
+    margin: 1rem 10% 1rem 0;
+}
+
+.chat-assistant {
+    background: white;
+    color: #1F2937;
+    padding: 1rem;
+    border-radius: 4px 12px 12px 12px;
+    border: 1px solid #E5E7EB;
+    margin: 1rem 0 1rem 10%;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 0.5rem;
+}
+
+.badge-success {
+    background: #ECFDF5;
+    color: #065F46;
+}
+
+.source-card {
+    background: white;
+    border-left: 4px solid #7C3AED;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+}
+
+@media (max-width: 768px) {
+    .chat-user, .chat-assistant {
+        margin-left: 0;
+        margin-right: 0;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ============= ULTRA-FAST CACHING =============
+@st.cache_resource(show_spinner=False)
+def init_agents():
+    """Initialize agents once and reuse"""
     return {
         "ingestion": IngestionAgent(),
         "retrieval": RetrievalAgent()
     }
 
+@st.cache_resource(show_spinner=False)
+def get_llm_agent(api_key: str, model: str):
+    """Cache LLM agent per config"""
+    if not api_key:
+        return None
+    try:
+        return LLMResponseAgent(groq_api_key=api_key, model_name=model)
+    except:
+        return None
+
+# ============= SESSION STATE =============
+def init_state():
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "total_files" not in st.session_state:
+        st.session_state.total_files = 0
+    if "total_chunks" not in st.session_state:
+        st.session_state.total_chunks = 0
+    if "mcp_trace" not in st.session_state:
+        st.session_state.mcp_trace = []
+
+init_state()
+
+# ============= MAIN APP =============
 def main():
-    st.title("🤖 Agentic RAG Chatbot with MCP")
-    st.markdown("Upload diverse document formats and query them using an Agentic RAG architecture communicating via Model Context Protocol (MCP).")
+    # Header
+    st.markdown("""
+    <div class="header">
+        <h1>🤖 RAG Chatbot</h1>
+        <p>Smart Document Search & Analysis</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    agent_instances = get_agents()
+    agents = init_agents()
     
+    # ============= SIDEBAR =============
     with st.sidebar:
-        st.header("1. Configuration")
-        groq_api_key = st.text_input("Groq API Key (for Llama model):", type="password", value=os.environ.get("GROQ_API_KEY", ""))
+        st.markdown("## ⚙️ Configuration")
+        
+        groq_api_key = st.text_input(
+            "🔑 Groq API Key",
+            type="password",
+            value=os.environ.get("GROQ_API_KEY", ""),
+            help="Get from https://console.groq.com"
+        )
+        
         selected_model = st.selectbox(
-            "Select Groq Model:",
-            options=[
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "llama-3.1-70b-versatile",
-                "llama3-70b-8192",
-                "gemma2-9b-it",
-                "mixtral-8x7b-32768",
-            ],
+            "🧠 Model",
+            ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"],
             index=0
         )
         
-        st.header("2. Upload Documents")
-        st.markdown("Supported: PDF, PPTX, CSV, DOCX, TXT/MD")
-        uploaded_files = st.file_uploader("Choose files", accept_multiple_files=True)
+        st.divider()
         
-        if st.button("Process Documents"):
+        st.markdown("## 📄 Documents")
+        uploaded_files = st.file_uploader(
+            "Upload PDF, DOCX, TXT",
+            accept_multiple_files=True,
+            type=["pdf", "docx", "txt", "doc"]
+        )
+        
+        if st.button("🚀 Process", use_container_width=True, type="primary"):
             if not uploaded_files:
-                st.warning("Please upload at least one file.")
+                st.error("Upload at least one file")
             else:
-                with st.spinner("Agents are digesting the documents..."):
-                    session_chunks = 0
-                    for uploaded_file in uploaded_files:
-                        file_bytes = uploaded_file.read()
+                progress_bar = st.progress(0)
+                status = st.empty()
+                chunks_total = 0
+                
+                for idx, file in enumerate(uploaded_files):
+                    try:
+                        status.text(f"Processing: {file.name}")
+                        progress_bar.progress((idx + 1) / len(uploaded_files))
                         
-                        # 1. Initiate Ingestion -> Retrieval
+                        file_bytes = file.read()
+                        
                         ingest_req = MCPMessage(
                             sender="UI",
                             receiver="IngestionAgent",
                             type="INGEST_REQUEST",
-                            payload={
-                                "file_content": file_bytes,
-                                "filename": uploaded_file.name
-                            }
+                            payload={"file_content": file_bytes, "filename": file.name}
                         )
-                        st.session_state.mcp_trace.append(ingest_req.model_dump())
                         
-                        chunk_msg = agent_instances["ingestion"].process(ingest_req)
-                        st.session_state.mcp_trace.append(chunk_msg.model_dump())
+                        chunk_msg = agents["ingestion"].process(ingest_req)
+                        ingest_complete = agents["retrieval"].process(chunk_msg)
                         
-                        # 2. Retrieval store chunks
-                        ingest_complete_msg = agent_instances["retrieval"].process(chunk_msg)
-                        st.session_state.mcp_trace.append(ingest_complete_msg.model_dump())
-
-                        file_chunks = ingest_complete_msg.payload.get("chunks_added", 0)
-                        session_chunks += file_chunks
+                        chunks = ingest_complete.payload.get("chunks_added", 0)
+                        chunks_total += chunks
                         st.session_state.total_files += 1
-                    
-                    st.session_state.total_chunks += session_chunks
-                    st.success(f"✅ Processed **{len(uploaded_files)}** file(s) → **{session_chunks}** chunks added!")
-
-        # Document Stats
-        st.header("📊 Document Stats")
-        col1, col2 = st.columns(2)
-        col1.metric("📄 Files Uploaded", st.session_state.get("total_files", 0))
-        col2.metric("🧩 Total Chunks", st.session_state.get("total_chunks", 0))
-
-        st.header("MCP Communication Trace")
-        if st.checkbox("Show MCP Logs"):
-            if st.session_state.get("mcp_trace"):
-                for m in reversed(st.session_state.mcp_trace):
-                    st.json(m)
-            else:
-                st.info("No messages yet.")
-
-    # Main Chat Area
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
-    if "mcp_trace" not in st.session_state:
-        st.session_state.mcp_trace = []
-
-    if "total_files" not in st.session_state:
-        st.session_state.total_files = 0
-
-    if "total_chunks" not in st.session_state:
-        st.session_state.total_chunks = 0
-        
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if "sources" in message and message["sources"]:
-                srcs = message["sources"]
-                st.caption(f"🔍 Retrieved **{len(srcs)}** chunk(s) from **{len(set(d['metadata'].get('source','') for d in srcs))}** document(s).")
-                with st.expander("🧩 View Retrieved Chunks"):
-                    for i, doc in enumerate(srcs):
-                        st.markdown(f"**Chunk {i+1} — Source: `{doc['metadata'].get('source', 'Unknown')}`**")
-                        st.info(doc['page_content'])
-
-    if prompt := st.chat_input("Ask a question about your documents..."):
-        if not groq_api_key:
-            st.error("Please provide a Groq API Key in the sidebar.")
-            return
-            
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Agents are collaborating to answer..."):
-                # Run the Agentic communication
-                llm_agent = LLMResponseAgent(groq_api_key=groq_api_key, model_name=selected_model)
+                    except Exception as e:
+                        st.error(f"Error: {str(e)[:50]}")
                 
-                # 3. Retrieve request
+                progress_bar.empty()
+                status.empty()
+                st.session_state.total_chunks += chunks_total
+                st.success(f"✅ {len(uploaded_files)} files → {chunks_total} chunks")
+        
+        st.divider()
+        
+        col1, col2 = st.columns(2)
+        col1.metric("📄 Files", st.session_state.total_files)
+        col2.metric("🧩 Chunks", st.session_state.total_chunks)
+        
+        st.divider()
+        
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+
+    # ============= CHAT AREA =============
+    st.divider()
+    
+    # Display messages
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            st.markdown(f"""
+            <div class="chat-user">
+                <strong>👤 You</strong><br/>
+                {msg["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            status_badge = f"""
+            <span class="badge badge-{'success' if msg.get('status') == 'success' else 'error'}">
+                {'✅ SUCCESS' if msg.get('status') == 'success' else '❌ ERROR'}
+            </span>
+            """
+            st.markdown(f"""
+            <div class="chat-assistant">
+                <strong>🤖 Assistant</strong>{status_badge}<br/><br/>
+                {msg["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Show sources
+            if msg.get("sources"):
+                with st.expander(f"📚 Sources ({len(msg['sources'])} used)"):
+                    for i, src in enumerate(msg["sources"], 1):
+                        source_name = src['metadata'].get('source', 'Unknown')
+                        preview = src['page_content'][:100].replace('\n', ' ') + "..."
+                        st.markdown(f"""
+                        <div class="source-card">
+                            <strong>📄 {source_name}</strong><br/>
+                            <small>{preview}</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+    # Chat input
+    if prompt := st.chat_input("Ask about your documents..."):
+        if not groq_api_key:
+            st.error("Provide Groq API Key in sidebar")
+            st.stop()
+        
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.markdown(f"""
+        <div class="chat-user">
+            <strong>👤 You</strong><br/>
+            {prompt}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Process
+        with st.spinner("⏳ Thinking..."):
+            try:
+                llm_agent = get_llm_agent(groq_api_key, selected_model)
+                if not llm_agent:
+                    raise Exception("Failed to initialize LLM")
+                
+                # Retrieve
                 retrieve_req = MCPMessage(
                     sender="UI",
                     receiver="RetrievalAgent",
                     type="RETRIEVE_REQUEST",
-                    payload={"query": prompt}
+                    payload={"query": prompt, "top_k": 3}
                 )
-                st.session_state.mcp_trace.append(retrieve_req.model_dump())
+                context_msg = agents["retrieval"].process(retrieve_req)
                 
-                context_msg = agent_instances["retrieval"].process(retrieve_req)
-                st.session_state.mcp_trace.append(context_msg.model_dump())
+                # Generate
+                final_msg = llm_agent.process(context_msg)
                 
-                # 4. LLM Generation
-                final_answer_msg = llm_agent.process(context_msg)
-                st.session_state.mcp_trace.append(final_answer_msg.model_dump())
+                answer = final_msg.payload.get("answer", "No answer")
+                sources = final_msg.payload.get("sources", [])
+                status = final_msg.payload.get("status", "error")
                 
-                answer = final_answer_msg.payload.get("answer", "")
-                sources = final_answer_msg.payload.get("sources", [])
+                # Display answer
+                status_badge = f"""
+                <span class="badge badge-{'success' if status == 'success' else 'error'}">
+                    {'✅ SUCCESS' if status == 'success' else '❌ ERROR'}
+                </span>
+                """
+                st.markdown(f"""
+                <div class="chat-assistant">
+                    <strong>🤖 Assistant</strong>{status_badge}<br/><br/>
+                    {answer}
+                </div>
+                """, unsafe_allow_html=True)
                 
-                st.markdown(answer)
-
-                # Show chunk retrieval stats
-                num_chunks = len(sources)
-                if num_chunks > 0:
-                    st.caption(f"🔍 Retrieved **{num_chunks}** chunk(s) from **{len(set(d['metadata'].get('source','') for d in sources))}** document(s) to generate this answer.")
-                    with st.expander("🧩 View Retrieved Chunks"):
-                        for i, doc in enumerate(sources):
-                            st.markdown(f"**Chunk {i+1} — Source: `{doc['metadata'].get('source', 'Unknown')}`**")
-                            st.info(doc['page_content'])
-                else:
-                    st.caption("⚠️ No chunks retrieved — no documents have been uploaded yet.")
-
-                st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
+                # Show sources
+                if sources and status == "success":
+                    with st.expander(f"📚 Sources ({len(sources)} used)"):
+                        for i, src in enumerate(sources, 1):
+                            source_name = src['metadata'].get('source', 'Unknown')
+                            preview = src['page_content'][:100].replace('\n', ' ') + "..."
+                            st.markdown(f"""
+                            <div class="source-card">
+                                <strong>📄 {source_name}</strong><br/>
+                                <small>{preview}</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+                
+                # Add to history
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": answer,
+                    "sources": sources,
+                    "status": status
+                })
+            
+            except Exception as e:
+                error_msg = f"❌ {str(e)[:100]}"
+                st.markdown(f"""
+                <div class="chat-assistant">
+                    <strong>🤖 Assistant</strong>
+                    <span class="badge" style="background: #FEF2F2; color: #7F1D1D;">ERROR</span><br/><br/>
+                    {error_msg}
+                </div>
+                """, unsafe_allow_html=True)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_msg,
+                    "sources": [],
+                    "status": "error"
+                })
 
 if __name__ == "__main__":
     main()
